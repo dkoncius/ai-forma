@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="lt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pasirinkimų diagramos</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen text-gray-900">
+    <div class="max-w-5xl mx-auto px-4 py-8">
+        <header class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-8">
+            <h1 class="text-xl sm:text-2xl font-bold text-gray-900">Pasirinkimų diagramos</h1>
+            <div class="flex flex-wrap gap-2">
+                <a href="index.html" class="inline-flex items-center justify-center px-4 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 shadow-sm">
+                    ← Forma
+                </a>
+                <button type="button" id="btnRefresh" class="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-indigo-600 text-sm font-medium text-white hover:bg-indigo-700 shadow-sm disabled:opacity-60 disabled:pointer-events-none">
+                    Atnaujinti
+                </button>
+            </div>
+        </header>
+
+        <div id="loadingState" class="hidden rounded-2xl bg-white border border-gray-100 p-12 text-center text-gray-500 text-sm">
+            Kraunama…
+        </div>
+
+        <div id="errorState" class="hidden rounded-2xl border border-red-100 bg-red-50 p-5 text-sm text-red-900">
+            <p class="font-semibold mb-1">Klaida</p>
+            <p id="errorMessage" class="text-red-800 whitespace-pre-wrap"></p>
+        </div>
+
+        <div id="emptyState" class="hidden rounded-2xl bg-white border border-gray-100 p-12 text-center text-gray-500 text-sm">
+            Nėra įrašų su pasirinkimais.
+        </div>
+
+        <div id="dashboard" class="hidden space-y-8">
+            <section class="bg-white rounded-2xl border border-gray-100 shadow-sm shadow-indigo-100/30 overflow-hidden" aria-labelledby="h-charts">
+                <div class="px-5 sm:px-8 py-5 border-b border-gray-100 bg-gradient-to-br from-indigo-50 via-white to-violet-50/60">
+                    <h2 id="h-charts" class="text-lg font-semibold text-gray-900">Pasirinkimų pasiskirstymas</h2>
+                    <p class="text-sm text-gray-500 mt-1">Viena suvestinė: paslauga, biudžetas ir terminas</p>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-8 p-5 sm:p-8">
+                    <div class="flex flex-col items-center">
+                        <h3 class="text-xs font-semibold text-indigo-600 uppercase tracking-wide mb-3">Paslauga</h3>
+                        <div class="relative w-full max-w-[240px] mx-auto aspect-square">
+                            <canvas id="chartPaslauga" aria-label="Paslaugų diagrama"></canvas>
+                        </div>
+                    </div>
+                    <div class="flex flex-col items-center md:border-x md:border-gray-100 md:px-4">
+                        <h3 class="text-xs font-semibold text-indigo-600 uppercase tracking-wide mb-3">Biudžetas</h3>
+                        <div class="relative w-full max-w-[240px] mx-auto aspect-square">
+                            <canvas id="chartBiudzetas" aria-label="Biudžeto diagrama"></canvas>
+                        </div>
+                    </div>
+                    <div class="flex flex-col items-center">
+                        <h3 class="text-xs font-semibold text-indigo-600 uppercase tracking-wide mb-3">Terminas</h3>
+                        <div class="relative w-full max-w-[240px] mx-auto aspect-square">
+                            <canvas id="chartTerminas" aria-label="Termino diagrama"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 sm:p-6" aria-labelledby="h-history">
+                <h2 id="h-history" class="text-sm font-semibold text-gray-900 mb-4">Paskutiniai 5 užpildymai</h2>
+                <ul id="historyList" class="divide-y divide-gray-100 border border-gray-100 rounded-xl overflow-hidden bg-gray-50/50"></ul>
+            </section>
+        </div>
+    </div>
+
+    <script>
+        const N8N_STATS_URL = 'https://baikas6.app.n8n.cloud/webhook/c02d37d9-af69-4a98-8401-553be2e2e340';
+
+        /** Aiškiai atskiriančios spalvos (šaltos ir šiltos kaitaliojant) */
+        const CHART_COLORS = [
+            '#2563eb',
+            '#ea580c',
+            '#059669',
+            '#db2777',
+            '#ca8a04',
+            '#0891b2',
+        ];
+
+        /** Suvienodina panašias reikšmes (pvz. „Iki“ vs „iki“ terminams), kad nesidubliuotų sektoriai */
+        function canonicalChoice(field, raw) {
+            const s = String(raw || '').trim();
+            if (!s) return '—';
+            const lower = s.toLowerCase().replace(/\s+/g, ' ');
+
+            if (field === 'terminas') {
+                if (lower.includes('skubu')) return 'Skubu (iki 2 savaičių)';
+                if (lower.includes('lankstus')) return 'Lankstus (1 – 3 mėnesiai)';
+            }
+            if (field === 'paslauga') {
+                if (lower.includes('kodav')) return 'Kodavimas';
+                if (lower.includes('dizain')) return 'Dizainas';
+                if (lower.includes('rinkod')) return 'Rinkodara';
+            }
+            if (field === 'biudzetas') {
+                if (lower.includes('bazin') || lower.includes('iki 1000')) return 'Bazinė apimtis (iki 1000 €)';
+                if (lower.includes('standartin') || (lower.includes('1000') && lower.includes('5000')))
+                    return 'Standartinė apimtis (1000 € – 5000 €)';
+                if (lower.includes('plati') || lower.includes('virš 5000') || lower.includes('virs 5000'))
+                    return 'Plati apimtis (virš 5000 €)';
+            }
+            return s;
+        }
+
+        function countByCanonical(entries, field) {
+            const map = {};
+            for (const row of entries) {
+                const k = canonicalChoice(field, row[field]);
+                map[k] = (map[k] || 0) + 1;
+            }
+            return map;
+        }
+
+        let chartInstances = [];
+
+        function destroyCharts() {
+            chartInstances.forEach((c) => c.destroy());
+            chartInstances = [];
+        }
+
+        function renderDoughnut(canvasId, counts) {
+            const canvas = document.getElementById(canvasId);
+            const pairs = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+            if (pairs.length === 0) return;
+
+            const existing = Chart.getChart(canvas);
+            if (existing) existing.destroy();
+
+            const chart = new Chart(canvas.getContext('2d'), {
+                type: 'doughnut',
+                data: {
+                    labels: pairs.map((p) => p[0]),
+                    datasets: [{
+                        data: pairs.map((p) => p[1]),
+                        backgroundColor: pairs.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]),
+                        borderColor: '#ffffff',
+                        borderWidth: 3,
+                        hoverOffset: 8,
+                    }],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    cutout: '62%',
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                usePointStyle: true,
+                                pointStyle: 'circle',
+                                padding: 12,
+                                font: { family: 'Inter, system-ui, sans-serif', size: 11 },
+                                maxWidth: 200,
+                            },
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label(ctx) {
+                                    const n = ctx.raw;
+                                    const sum = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                                    const pct = sum ? Math.round((n / sum) * 100) : 0;
+                                    return ` ${n} (${pct}%)`;
+                                },
+                            },
+                        },
+                    },
+                },
+            });
+            chartInstances.push(chart);
+        }
+
+        function cell(row, ...keys) {
+            for (const k of keys) {
+                if (row[k] != null && String(row[k]).trim() !== '') return String(row[k]).trim();
+            }
+            return '';
+        }
+
+        function trimRowKeys(row) {
+            if (!row || typeof row !== 'object') return {};
+            const out = {};
+            for (const [k, v] of Object.entries(row)) {
+                out[k.trim()] = v;
+            }
+            return out;
+        }
+
+        function normalizeSheetRows(raw) {
+            const arr = Array.isArray(raw) ? raw : [];
+            return arr.map((row) => {
+                const r = trimRowKeys(row);
+                return {
+                    row_number: r.row_number,
+                    paslauga: cell(r, 'Paslauga', 'paslauga'),
+                    biudzetas: cell(r, 'Biudžetas', 'Biudzetas', 'biudzetas'),
+                    terminas: cell(r, 'Terminas', 'terminas'),
+                    komentaras: cell(r, 'Komentaras', 'komentaras'),
+                    data: cell(r, 'Data', 'data'),
+                };
+            });
+        }
+
+        function isMeaningfulRow(r) {
+            return !!(r.paslauga || r.biudzetas || r.terminas);
+        }
+
+        async function fetchSheetRows() {
+            const res = await fetch(N8N_STATS_URL, {
+                method: 'GET',
+                headers: { Accept: 'application/json' },
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const text = await res.text();
+            if (!text.trim()) throw new Error('Tuščias atsakas iš webhook.');
+            let parsed;
+            try {
+                parsed = JSON.parse(text);
+            } catch {
+                throw new Error('Atsakas ne JSON.');
+            }
+            return normalizeSheetRows(parsed);
+        }
+
+        function escapeHtml(s) {
+            const div = document.createElement('div');
+            div.textContent = s;
+            return div.innerHTML;
+        }
+
+        function formatSheetDate(val) {
+            if (!val) return '—';
+            const s = String(val).trim();
+            if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+                const d = new Date(s + 'T12:00:00');
+                return isNaN(d.getTime()) ? s : d.toLocaleDateString('lt-LT');
+            }
+            try {
+                const d = new Date(s);
+                return isNaN(d.getTime()) ? s : d.toLocaleString('lt-LT', { dateStyle: 'short', timeStyle: 'short' });
+            } catch {
+                return s;
+            }
+        }
+
+        function renderHistory(entries) {
+            const listEl = document.getElementById('historyList');
+            listEl.innerHTML = '';
+            const sorted = [...entries].sort((a, b) => (Number(b.row_number) || 0) - (Number(a.row_number) || 0));
+            const last5 = sorted.slice(0, 5);
+            for (const row of last5) {
+                const li = document.createElement('li');
+                li.className = 'px-4 py-3.5 bg-white text-sm';
+                const kom = row.komentaras ? `<p class="text-gray-500 mt-1.5 text-xs line-clamp-2" title="${escapeHtml(row.komentaras)}">${escapeHtml(row.komentaras)}</p>` : '';
+                const line2 = [canonicalChoice('biudzetas', row.biudzetas), canonicalChoice('terminas', row.terminas)]
+                    .filter((x) => x && x !== '—')
+                    .join(' · ');
+                li.innerHTML = `
+                    <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
+                        <span class="font-semibold text-gray-900">${escapeHtml(canonicalChoice('paslauga', row.paslauga))}</span>
+                        <span class="text-xs text-gray-400 tabular-nums shrink-0">${escapeHtml(formatSheetDate(row.data))} · eil. ${row.row_number != null ? escapeHtml(String(row.row_number)) : '—'}</span>
+                    </div>
+                    <p class="text-gray-600 mt-1 text-xs sm:text-sm leading-relaxed">${escapeHtml(line2 || '—')}</p>
+                    ${kom}
+                `;
+                listEl.appendChild(li);
+            }
+        }
+
+        function setVisible(id, show) {
+            document.getElementById(id).classList.toggle('hidden', !show);
+        }
+
+        async function loadStats() {
+            const btn = document.getElementById('btnRefresh');
+            btn.disabled = true;
+            destroyCharts();
+            setVisible('loadingState', true);
+            setVisible('errorState', false);
+            setVisible('emptyState', false);
+            setVisible('dashboard', false);
+
+            try {
+                const allRows = await fetchSheetRows();
+                const meaningful = allRows.filter(isMeaningfulRow);
+                setVisible('loadingState', false);
+
+                if (meaningful.length === 0) {
+                    setVisible('emptyState', true);
+                    return;
+                }
+
+                setVisible('dashboard', true);
+
+                const cP = countByCanonical(meaningful, 'paslauga');
+                const cB = countByCanonical(meaningful, 'biudzetas');
+                const cT = countByCanonical(meaningful, 'terminas');
+
+                renderDoughnut('chartPaslauga', cP);
+                renderDoughnut('chartBiudzetas', cB);
+                renderDoughnut('chartTerminas', cT);
+
+                renderHistory(meaningful);
+            } catch (err) {
+                console.error(err);
+                setVisible('loadingState', false);
+                const msg =
+                    err instanceof TypeError && err.message.includes('fetch')
+                        ? 'Tinklo / CORS klaida.\n\n' + String(err.message)
+                        : String(err.message || err);
+                document.getElementById('errorMessage').textContent = msg;
+                setVisible('errorState', true);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        document.getElementById('btnRefresh').addEventListener('click', loadStats);
+        loadStats();
+    </script>
+</body>
+</html>
