@@ -36,6 +36,10 @@
 </head>
 <body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
 
+    <a href="statistika.html" target="_blank" rel="noopener noreferrer" class="fixed top-4 right-4 z-10 text-sm font-medium text-indigo-600 hover:text-indigo-800 bg-white/90 backdrop-blur px-4 py-2 rounded-lg shadow border border-gray-200 transition-colors">
+        Diagramos
+    </a>
+
     <div class="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden relative">
         
         <!-- Progress Bar Background -->
@@ -168,6 +172,18 @@
 
     <script>
         const N8N_WEBHOOK_URL = 'https://baikas6.app.n8n.cloud/webhook/c02d37d9-af69-4a98-8401-553be2e2e340';
+        const LOCAL_STATS_KEY = 'ai-forma-local-stats-v1';
+
+        function appendLocalStatsEntry(entry) {
+            try {
+                const prev = JSON.parse(localStorage.getItem(LOCAL_STATS_KEY) || '[]');
+                if (!Array.isArray(prev)) return;
+                prev.push(entry);
+                localStorage.setItem(LOCAL_STATS_KEY, JSON.stringify(prev));
+            } catch (_) {
+                /* ignore */
+            }
+        }
 
         /** Reikšmės pagal Google Sheet stulpelių pavadinimus (n8n mapping) */
         const SERVICE_LABELS = {
@@ -296,6 +312,14 @@
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status}`);
                     }
+
+                    appendLocalStatsEntry({
+                        ...data,
+                        service: raw.service,
+                        budget: raw.budget,
+                        deadline: raw.deadline,
+                        submittedAt: new Date().toISOString(),
+                    });
 
                     successModal.classList.remove('opacity-0', 'pointer-events-none');
                     modalContent.classList.remove('scale-90');
